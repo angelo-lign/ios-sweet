@@ -1,0 +1,143 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 099d956..bb698a9 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -26,6 +26,7 @@ extern kern_return_t thread_terminate(thread_t);
+ extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ extern void sweet_hid_touch(int finger, int down, int x, int y);
+ void sweet_touch_init(void);
++void sweet_touch_display(bool on);
+ 
+ #define TOUCH_SE_PA      0x00c80000u /* QUP wrapper 2, SE0 (qupv3_se17) */
+ #define TOUCH_GCC_PA     0x00100000u
+@@ -95,6 +96,8 @@ void sweet_touch_init(void);
+ static struct {
+ 	vm_offset_t se, gcc, gpio;
+ 	bool started, dead, probing, bitbang;
++	volatile bool resume;          /* 0168: the display came on: re-initialise the IC */
++	unsigned hid;                  /* 0168: HID reports sent (statistics) */
+ 	int irq_hint;
+ 	unsigned clk_sel;
+ 	uint32_t bb_cfg[2];    /* SDA, SCL TLMM config with output-enable clear (released) */
+@@ -543,11 +546,13 @@ touch_report(uint32_t mask, const int *x, const int *y)
+ 		if (mask & bit) {
+ 			if (!(st.active & bit) || x[id] != st.x[id] || y[id] != st.y[id]) {
+ 				sweet_hid_touch((int)id, 1, x[id], y[id]);
++				st.hid++;
+ 			}
+ 			st.x[id] = x[id];
+ 			st.y[id] = y[id];
+ 		} else if (st.active & bit) {
+ 			sweet_hid_touch((int)id, 0, st.x[id], st.y[id]);
++			st.hid++;
+ 		}
+ 	}
+ 	st.active = mask;
+@@ -723,6 +728,44 @@ touch_se_init(void)
+ 	return true;
+ }
+ 
++/*
++ * 0168: bring the IC back to its running state: release every finger, free the bus, pulse reset, then the
++ * same TOUCH_FUNCTION / SENSE_ON the first start sends (Linux s6sy761 does this on every resume). Called on
++ * the touch thread when the display comes on, and when the bus keeps failing.
++ */
++static void
++touch_reinit(const char *why)
++{
++	uint8_t bs = 0;
++	touch_report(0, st.x, st.y);
++	if (st.bitbang) {
++		bb_recover();
++	}
++	touch_gpio(TP_RST, 0, 0, 3, true, false);     /* low = reset */
++	touch_wait(10);
++	touch_gpio(TP_RST, 0, 0, 3, true, true);      /* out of reset */
++	touch_wait(300);                              /* as the first start: Linux waits 140 ms */
++	int e1 = touch_read(TP_ADDR, SY_BOOT_STATUS, false, &bs, 1);
++	const uint8_t func[3] = {SY_TOUCH_FUNC, 0x01, 0x00};
++	const uint8_t on = SY_SENSE_ON;
++	const uint8_t clr = SY_CLEAR_STACK;
++	int w1 = touch_write(func, sizeof(func));
++	int w2 = touch_write(&on, 1);
++	(void)touch_write(&clr, 1);
++	printf("SWEET TOUCH: re-init (%s): boot-status err=%d bs=%#x (app=0x20) touch-function=%d sense-on=%d\n",
++	    why, e1, bs, w1, w2);
++}
++
++/* 0168: called by the framebuffer driver when the display turns off or on (RequestPowerChange). */
++void
++sweet_touch_display(bool on)
++{
++	printf("SWEET TOUCH: display %s\n", on ? "on" : "off");
++	if (on) {
++		st.resume = true;
++	}
++}
++
+ static void
+ touch_thread(void *arg, wait_result_t result)
+ {
+@@ -813,23 +856,41 @@ touch_thread(void *arg, wait_result_t result)
+ 	if (w2) {
+ 		goto out;
+ 	}
+-	unsigned errors = 0, ticks = 0;
++	unsigned errors = 0, ticks = 0, polls = 0, bad = 0, hid0 = st.hid;
++	const unsigned stat_every = 5000u / poll_ms;      /* 0168: one statistics line every 5 s */
+ 	while (!st.dead) {
++		if (st.resume) {
++			st.resume = false;
++			touch_reinit("display on");
++			errors = 0;
++		}
+ 		/* Optional IRQ hint (active low) still reads every ~100 ms and while down. */
+ 		if (!st.irq_hint || st.active || !(touch_rd(st.gpio, TOUCH_GPIO_IO(TP_IRQ)) & 1u) ||
+ 		    (++ticks % (100u / poll_ms)) == 0) {
+ 			int err = touch_s6sy();
++			polls++;
+ 			if (err) {
++				bad++;
+ 				if ((errors++ % 100u) == 0) {
+ 					printf("SWEET TOUCH: report err=%d irq=%#x\n", err, st.irq_status);
+ 				}
+ 				if (errors == 10) {
+ 					touch_report(0, st.x, st.y); /* release after persistent bad reads */
+ 				}
++				if (errors == 25 || (errors > 25 && ((errors - 25) % 500u) == 0)) {
++					touch_reinit("bus errors");     /* 0168: the IC is not answering: start it again */
++				}
+ 			} else {
+ 				errors = 0;
+ 			}
+ 		}
++		if (polls >= stat_every) {
++			printf("SWEET TOUCH: 5s: polls=%u errors=%u hid=%u irq-pin=%u sda=%u scl=%u\n",
++			    polls, bad, st.hid - hid0, touch_rd(st.gpio, TOUCH_GPIO_IO(TP_IRQ)) & 1u,
++			    bb_level(0) ? 1u : 0u, bb_level(1) ? 1u : 0u);
++			polls = bad = 0;
++			hid0 = st.hid;
++		}
+ 		touch_wait(poll_ms);
+ 	}
+ 	touch_report(0, st.x, st.y);
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index b7a23ac..9a6ef4e 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -39,6 +39,7 @@
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ extern "C" uint32_t redwood_gpu_last(void);                                     /* bsd/dev/sweet_gpu.c */
+ extern "C" bool redwood_gpu_ready(void);
++extern "C" void sweet_touch_display(bool on);                                   /* 0168: bsd/dev/sweet_touch.c */
+ extern "C" int sweet_gpu_window_alloc(uint64_t bytes, uint64_t *base);         /* 0144 */
+ extern "C" int sweet_gpu_map_at(uint64_t iova, const uint64_t *pages, uint32_t npages);
+ extern "C" uint32_t sweet_gpu_submit_v2(const uint64_t *iova, const uint32_t *dwords, unsigned n, bool *busy);
+@@ -1257,6 +1258,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 			}
+ 			IOLockUnlock(fFB->fLock);
+ 			IOLog("SWEET FB: display %s\n", off ? "off" : "on");
++			sweet_touch_display(!off);      /* 0168: the touch IC is started again when the display comes on */
+ 		}
+ 		break;
+ 	case kSweetFBSwapWait:
