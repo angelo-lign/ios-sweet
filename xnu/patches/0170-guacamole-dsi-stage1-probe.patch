@@ -18,7 +18,7 @@ diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
 + */
 +#define DSI0_PA   0x0ae94000ull
 +#define DSI1_PA   0x0ae96000ull
-+#define DSI_SIZE  0x400ull
++#define DSI_SIZE  0x400u
 +#define DISPCC_PA 0x0af00000ull
 +#define DISPCC_SZ 0x10000ull
 +
