@@ -27,7 +27,25 @@ jobs:
         if: ${{ inputs.mesa == 'true' }}
         run: |
           brew install bison meson ninja
+          # mk-mesa.sh only knows the Apple-silicon bison path; the ir3 parser needs bison 3, not macOS's 2.3
+          export PATH="$(brew --prefix bison)/bin:$PATH"
+          bison --version | head -1
           bash userland/mesa/mk-mesa.sh
+
+      - name: Mesa logs
+        if: ${{ always() && inputs.mesa == 'true' }}
+        run: |
+          mkdir -p mesa-logs
+          cp userland/mesa/build/*.log mesa-logs/ 2>/dev/null || true
+          ls -la mesa-logs
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.mesa == 'true' }}
+        with:
+          name: mesa-logs
+          path: mesa-logs
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Build userland
         run: sh userland/build.sh
