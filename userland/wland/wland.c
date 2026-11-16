@@ -363,7 +363,21 @@ static int qmp_send(const char *msg)
 
 #define PAS_MODEM	4
 #define MPSS_PA		0x8dc00000ull	/* flame modem_region */
-#define MPSS_SIZE	0x09600000ull	/* guacamole: modem_region is 0x9600000 (flame 0xb400000) */
+/*
+ * The modem_region size must be what the device tree says (TZ's PAS_MEM_SETUP checks it): the OnePlus 7T Pro (hotdog,
+ * HD1911) live tree has 0x8dc00000 + 0xa000000 (also OnePlus's sm8150-oem.dtsi); the 7 Pro unit this was written
+ * on measured 0x9600000 (flame 0xb400000). WLAND_MPSS_SIZE=0x9600000 selects the 7 Pro's.
+ */
+static uint64_t mpss_size_get(void)
+{
+	static uint64_t v;
+	if (!v) {
+		const char *e = getenv("WLAND_MPSS_SIZE");
+		v = e && e[0] ? strtoull(e, NULL, 0) : 0x0a000000ull;
+	}
+	return v;
+}
+#define MPSS_SIZE	mpss_size_get()
 #define FW_DIR		"/var/local/fw/modem"
 #define SCM_PIL(cmd)	(0x42000000ull | (2u << 8) | (cmd))
 
