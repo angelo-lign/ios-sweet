@@ -1,0 +1,83 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 9a6ef4e..64b13e0 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -60,6 +60,7 @@ static struct {
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOUserClient.h>
+ #include <IOKit/IOKitKeys.h>
++#include <IOKit/IODeviceTreeSupport.h>
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/IOWorkLoop.h>
+@@ -217,23 +218,54 @@ AppleCLCD::start(IOService *provider)
+ 	}
+ 	int native = 0;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
++	/*
++	 * 0169, boot-arg sweetfbscale=2 (HakiOS' fbscale=2): the iPhone X's 375 x 812 points at 2 pixels a point,
++	 * 750 x 1624, instead of 3 (1125 x 2436): 2.25 times fewer pixels for the GPU to draw, enlarged to the panel.
++	 * MobileGestalt takes the scale from the device tree (/chosen display-scale, /product artwork-scale-factor).
++	 */
++	uint32_t lw = SWEET_FB_LOGICAL_W, lh = SWEET_FB_LOGICAL_H, fbscale = 0;
++	(void)PE_parse_boot_argn("sweetfbscale", &fbscale, sizeof(fbscale));
++	if (fbscale == 2) {
++		static const char *const places[][2] = {{"/chosen", "display-scale"}, {"/product", "artwork-scale-factor"}};
++		lw = 375 * fbscale;
++		lh = 812 * fbscale;
++		for (unsigned i = 0; i < sizeof(places) / sizeof(places[0]); i++) {
++			IORegistryEntry *node = IORegistryEntry::fromPath(places[i][0], gIODTPlane);
++			if (node != NULL) {
++				node->setProperty(places[i][1], &fbscale, sizeof(fbscale));
++				node->release();
++			} else {
++				IOLog("SWEET FB: sweetfbscale: no %s in the device tree\n", places[i][0]);
++			}
++		}
++		/* tools/mkadt.py's /arm-io/disp0 canvas size: what IOMobileFramebuffer.framework reads */
++		IORegistryEntry *disp = IORegistryEntry::fromPath("/arm-io/disp0", gIODTPlane);
++		if (disp != NULL) {
++			disp->setProperty("canvas-width", &lw, sizeof(lw));
++			disp->setProperty("canvas-height", &lh, sizeof(lh));
++			disp->release();
++		} else {
++			IOLog("SWEET FB: sweetfbscale: no /arm-io/disp0 in the device tree\n");
++		}
++		IOLog("SWEET FB: sweetfbscale=2: logical %ux%u\n", lw, lh);
++	}
+ 	fLogicalW = fWidth;
+ 	fLogicalH = fHeight;
+-	if (!native && fWidth <= SWEET_FB_LOGICAL_W && fHeight <= SWEET_FB_LOGICAL_H) {
+-		fLogicalW = SWEET_FB_LOGICAL_W;
+-		fLogicalH = SWEET_FB_LOGICAL_H;
++	if (!native && fWidth <= lw && fHeight <= lh) {
++		fLogicalW = lw;
++		fLogicalH = lh;
+ 	}
+ 	fScaleUp = false;
+ 	fColMap = NULL;
+-	if (!native && fWidth > SWEET_FB_LOGICAL_W && fHeight > SWEET_FB_LOGICAL_H &&
++	if (!native && fWidth > lw && fHeight > lh &&
+ 	    fWidth < 0x10000 && fHeight < 0x10000) {
+ 		fColMap = (uint16_t *)IOMalloc(fWidth * sizeof(uint16_t));
+ 		if (fColMap != NULL) {
+ 			for (uint32_t x = 0; x < fWidth; x++) {
+-				fColMap[x] = (uint16_t)(((uint64_t)x * SWEET_FB_LOGICAL_W) / fWidth);
++				fColMap[x] = (uint16_t)(((uint64_t)x * lw) / fWidth);
+ 			}
+-			fLogicalW = SWEET_FB_LOGICAL_W;
+-			fLogicalH = SWEET_FB_LOGICAL_H;
++			fLogicalW = lw;
++			fLogicalH = lh;
+ 			fScaleUp = true;
+ 		}
+ 	}
+@@ -1231,7 +1263,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		outCount = 1;
+ 		break;
+ 	case kSweetFBGetDotPitch:
+-		out[0] = SWEET_FB_DOT_PITCH;
++		out[0] = SWEET_FB_DOT_PITCH * fFB->fLogicalW / SWEET_FB_LOGICAL_W;     /* 0169: 305 ppi at 750 wide */
+ 		outCount = 1;
+ 		break;
+ 	case kSweetFBNotifications:
