@@ -1,0 +1,48 @@
+name: userland
+
+# Builds the iOS userland helpers with userland/build.sh on a macOS runner (Xcode + iPhoneOS SDK).
+# macOS arm64 hosted runners often have no capacity, so use the Intel pool, as xnu.yml does.
+on:
+  workflow_dispatch:
+    inputs:
+      mesa:
+        description: also build Mesa (userland/mesa/mk-mesa.sh) so build.sh makes libsweet-gl
+        default: "false"
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos clang --version | head -1
+
+      - name: Mesa (optional)
+        if: ${{ inputs.mesa == 'true' }}
+        run: |
+          brew install bison meson ninja
+          bash userland/mesa/mk-mesa.sh
+
+      - name: Build userland
+        run: sh userland/build.sh
+
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p dist
+          cp -R userland/out/. dist/ 2>/dev/null || true
+          ls -la dist
+          (cd dist && find . -type f -exec shasum -a 256 {} \; > SHA256SUMS) || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: userland
+          path: dist
+          retention-days: 14
