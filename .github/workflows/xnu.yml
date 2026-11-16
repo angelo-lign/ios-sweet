@@ -38,7 +38,9 @@ jobs:
     # 'macos-14-arm64-us-default' is not supported"), so this runs on macos-15
     # (Xcode 16+). Its iig emits IORPC.kernelContent, which xnu-8796 lacks:
     # xnu/local/*.patch adds it (applied below, same as tools/xnu-local-build.sh).
-    runs-on: macos-15
+    # macOS arm64 hosted runners often have no capacity ("not acquired by Runner
+    # of type hosted"), so use the Intel pool; the kernel is cross-built for arm64.
+    runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
