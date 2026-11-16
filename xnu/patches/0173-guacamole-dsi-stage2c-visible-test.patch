@@ -1,0 +1,53 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -2720,10 +2720,10 @@
+ 		}
+ 	}
+ 	/*
+-	 * sweetdsi=3: resend the boot loader's own brightness packet (header 0xc0390003 = DCS long write, WC 3,
+-	 * payload 51 hh ll, 8 bytes at DMA_BASE) with other levels: dim, bright, back to the boot value.
+-	 * DMA_BASE/LEN already point at it, so only the payload word changes, then the DMA SW trigger (0x90, which
+-	 * the boot loader left at 1) fires it. Levels after boot: 0x50, 0x3ff, then the original.
++	 * sweetdsi=3: resend the boot loader's own packet (header 0xc0390003 = DCS long write, payload at +4, 8
++	 * bytes at DMA_BASE) with other payloads, fired by the DMA SW trigger (0x90, which the boot loader left at 1).
++	 * Test 1 (all pixels on, 0x23, then normal 0x13) is visible if the path reaches the panel at all; test 2 dims
++	 * with 0x51 hh ll: 0x50, 0x3ff, the original.
+ 	 */
+ 	{
+ 		unsigned level = 0;
+@@ -2736,16 +2736,28 @@
+ 				printf("SWEET DSI: DMA buffer is not the expected brightness packet, not sending\n");
+ 			} else {
+ 				uint32_t orig = rd(buf, o + 4);
+-				uint32_t levels[3] = { 0x0050, 0x03ff, (((orig >> 8) & 0xffu) << 8) | ((orig >> 16) & 0xffu) };
+-				for (unsigned i = 0; i < 3; i++) {
+-					uint32_t v = levels[i];
+-					wr(buf, o + 4, (orig & 0xff0000ffu & ~0xff0000u) | ((v >> 8) << 8) | ((v & 0xffu) << 16));
++				uint32_t restore = (((orig >> 8) & 0xffu) << 8) | ((orig >> 16) & 0xffu);
++				struct { uint32_t w0, w1; const char *what; unsigned hold_ms; } steps[] = {
++					{ 0xc0390001u, 0x89000023u, "all pixels on (0x23)", 3000 },
++					{ 0xc0390001u, 0x89000013u, "normal mode (0x13)", 2000 },
++					{ 0xc0390003u, 0x89000051u | ((0x0050u >> 8) << 8) | ((0x0050u & 0xffu) << 16), "brightness 0x50", 4000 },
++					{ 0xc0390003u, 0x89000051u | ((0x03ffu >> 8) << 8) | ((0x03ffu & 0xffu) << 16), "brightness 0x3ff", 4000 },
++					{ 0xc0390003u, 0x89000051u | ((restore >> 8) << 8) | ((restore & 0xffu) << 16), "brightness original", 1000 },
++				};
++				for (unsigned i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
++					wr(buf, o, steps[i].w0);
++					wr(buf, o + 4, steps[i].w1);
+ 					__asm__ volatile ("dsb sy" ::: "memory");
++					printf("SWEET DSI: %s: buffer %08x %08x, before: INT %#x STATUS %#x FIFO %#x\n", steps[i].what,
++					    rd(buf, o), rd(buf, o + 4), rd(d0, 0x110), rd(d0, 8), rd(d0, 0xc));
+ 					wr(d0, 0x90, 1);
+ 					gpu_wait_ms(50);
+-					printf("SWEET DSI: level %#x sent: INT_CTRL %#x STATUS %#x FIFO %#x\n", v, rd(d0, 0x110), rd(d0, 8), rd(d0, 0xc));
+-					gpu_wait_ms(5000);
++					printf("SWEET DSI: %s: after: INT %#x STATUS %#x FIFO %#x ERR %#x\n", steps[i].what,
++					    rd(d0, 0x110), rd(d0, 8), rd(d0, 0xc), rd(d0, 0x68));
++					gpu_wait_ms(steps[i].hold_ms);
+ 				}
++				wr(buf, o, 0xc0390003u);
++				wr(buf, o + 4, orig);
+ 			}
+ 		}
+ 	}
