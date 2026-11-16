@@ -1,0 +1,70 @@
+name: metal
+
+# Builds the Metal path for the guacamole iOS userland on a macOS runner (Xcode + iPhoneOS SDK):
+# Turnip (Mesa Vulkan, darwin backend) + the metal2vulkan bridge (Rust) -> userland/metal2/out/SweetMetal2.bundle.
+# See docs/guacamole.md, "Metal (metal2vulkan + Turnip, sweetmtl=2)". macOS arm64 hosted runners often have
+# no capacity, so use the Intel pool, as xnu.yml does.
+on:
+  workflow_dispatch:
+    inputs:
+      rust:
+        description: Rust toolchain that tools/build-m2v-bridge.sh builds with (cargo +VERSION)
+        default: "1.98.0"
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          df -h / | tail -1
+
+      - name: Deps
+        run: |
+          brew install bison flex glslang llvm rustup meson ninja
+          # the build scripts hardcode the Apple-silicon prefix (/opt/homebrew/opt/...): point it at this runner's
+          sudo mkdir -p /opt/homebrew
+          sudo ln -sfn "$(brew --prefix)/opt" /opt/homebrew/opt
+          ls /opt/homebrew/opt/bison/bin/bison /opt/homebrew/opt/flex/bin/flex /opt/homebrew/opt/llvm/bin/llvm-as /opt/homebrew/opt/rustup/bin/rustup
+          export PATH=/opt/homebrew/opt/rustup/bin:$PATH
+          rustup toolchain install ${{ inputs.rust }} --profile minimal
+          rustup target add aarch64-apple-ios --toolchain ${{ inputs.rust }}
+          rustup run ${{ inputs.rust }} rustc --version
+
+      - name: Turnip (Mesa Vulkan for Adreno, darwin backend)
+        run: sh tools/build-turnip-ios.sh
+
+      - name: metal2vulkan bridge
+        run: sh tools/build-m2v-bridge.sh
+
+      - name: Turnip tests
+        run: sh userland/turnip/build.sh
+
+      - name: SweetMetal2.bundle
+        run: sh userland/metal2/build.sh
+
+      - name: Collect
+        if: always()
+        run: |
+          W=$(cd .. && pwd)/metal-work
+          mkdir -p dist/logs
+          cp -R userland/metal2/out dist/metal2 2>/dev/null || true
+          cp -R userland/turnip/out dist/turnip 2>/dev/null || true
+          cp "$W"/turnip/*.log dist/logs/ 2>/dev/null || true
+          cp "$W"/m2v-bridge/*.log dist/logs/ 2>/dev/null || true
+          find dist -type f | head -60
+          (cd dist && find . -type f ! -name SHA256SUMS -exec shasum -a 256 {} \; > SHA256SUMS) || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metal
+          path: dist
+          retention-days: 14
+          if-no-files-found: ignore
