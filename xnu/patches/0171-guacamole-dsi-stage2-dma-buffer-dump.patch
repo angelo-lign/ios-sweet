@@ -1,0 +1,28 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -2701,6 +2701,24 @@
+ 	/* display clock controller: the CBCRs (bit 31 = clock off) and RCGs live at 0x2000..0x2200 on sm8150 */
+ 	dsi_dump("dispcc", cc, 0x2000, 0x2200);
+ 	dsi_dump("dispcc", cc, 0x8000, 0x8100);
++	/* sweetdsi=2: what the boot loader's last DSI DMA command left (DMA_BASE 0x48 = 0xffd00000, LEN 0x4c) */
++	{
++		unsigned level = 0;
++		(void)PE_parse_boot_argn("sweetdsi", &level, sizeof(level));
++		if (level >= 2) {
++			uint32_t base = rd(d0, 0x48), len = rd(d0, 0x4c);
++			printf("SWEET DSI: DMA_BASE %#x LEN %u TRIG_CTRL %#x CMD_DMA_CTRL %#x INT_CTRL %#x\n", base, len,
++			    rd(d0, 0x80), rd(d0, 0x38), rd(d0, 0x110));
++			vm_offset_t buf = ml_io_map(base & ~0xfffu, 0x1000);
++			if (buf) {
++				uint32_t o = base & 0xfffu;
++				for (uint32_t i = 0; i < 64; i += 16) {
++					printf("SWEET DSI: dma buf +%02x: %08x %08x %08x %08x\n", i, rd(buf, o + i), rd(buf, o + i + 4),
++					    rd(buf, o + i + 8), rd(buf, o + i + 12));
++				}
++			}
++		}
++	}
+ 	printf("SWEET DSI: probe done (nothing written)\n");
+ out:
+ 	thread_terminate(current_thread());
