@@ -1,0 +1,244 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 391594a..099d956 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -94,9 +94,11 @@ void sweet_touch_init(void);
+ 
+ static struct {
+ 	vm_offset_t se, gcc, gpio;
+-	bool started, dead, probing;
++	bool started, dead, probing, bitbang;
+ 	int irq_hint;
+ 	unsigned clk_sel;
++	uint32_t bb_cfg[2];    /* SDA, SCL TLMM config with output-enable clear (released) */
++	unsigned bb_half_us;
+ 	uint32_t irq_status, irq_last, active;
+ 	unsigned sent, got;
+ 	int x[TOUCH_MAX], y[TOUCH_MAX];
+@@ -250,6 +252,178 @@ touch_irq(void)
+ 	return st.irq_last;
+ }
+ 
++/*
++ * GPIO bit-banged I2C (0167). On some units (seen on the OnePlus 7T Pro) the serial engine behind
++ * SDA/SCL has its FIFO (CPU) interface disabled: GENI_IF_FIFO_DISABLE_RO (0x64) bit 0 reads 1, and
++ * Android drives that engine with GPI DMA only, so the FIFO path above can never start a command.
++ * touch_se_init() then sets st.bitbang and this layer drives the two pins directly as an open-drain
++ * bus: low = output enabled with the latch low, high = output disabled (the bus has external
++ * pull-ups: the live DT's qupv3_se17 pins are bias-disable; boot-arg sweettouchbbpull=1 adds the
++ * internal pull-up). Boot-arg sweettouchbbus=N sets the half clock period (default 5 us, ~100 kHz
++ * or slower). Same message shape as touch_msg_run(): a TX with stretch keeps the bus for the
++ * repeated START of the next message.
++ */
++static void
++bb_set(unsigned which, bool low)
++{
++	touch_wr(st.gpio, TOUCH_GPIO_CFG(which ? TP_SCL : TP_SDA),
++	    st.bb_cfg[which] | (low ? 0x200u : 0u));
++}
++
++static bool
++bb_level(unsigned which)
++{
++	return touch_rd(st.gpio, TOUCH_GPIO_IO(which ? TP_SCL : TP_SDA)) & 1u;
++}
++
++/* Release SCL and wait for it to rise: the IC may stretch the clock. */
++static bool
++bb_scl_release(void)
++{
++	bb_set(1, false);
++	for (unsigned i = 0; i < 1000; ++i) {
++		if (bb_level(1)) {
++			return true;
++		}
++		delay(1);
++	}
++	return false;
++}
++
++static void
++bb_start(void)
++{
++	bb_set(0, false);
++	delay(st.bb_half_us);
++	(void)bb_scl_release();
++	delay(st.bb_half_us);
++	bb_set(0, true);
++	delay(st.bb_half_us);
++	bb_set(1, true);
++	delay(st.bb_half_us);
++}
++
++static void
++bb_stop(void)
++{
++	bb_set(0, true);
++	delay(st.bb_half_us);
++	(void)bb_scl_release();
++	delay(st.bb_half_us);
++	bb_set(0, false);
++	delay(st.bb_half_us);
++}
++
++/* SCL is low on entry and on exit. */
++static int
++bb_wbyte(uint8_t b)
++{
++	for (int i = 7; i >= 0; --i) {
++		bb_set(0, ((b >> i) & 1u) == 0);
++		delay(st.bb_half_us);
++		if (!bb_scl_release()) {
++			bb_set(1, true);
++			return EIO;
++		}
++		delay(st.bb_half_us);
++		bb_set(1, true);
++	}
++	bb_set(0, false); /* release SDA for the ACK */
++	delay(st.bb_half_us);
++	bool ok = bb_scl_release();
++	delay(st.bb_half_us);
++	bool nack = bb_level(0);
++	bb_set(1, true);
++	delay(st.bb_half_us);
++	return !ok ? EIO : (nack ? ENXIO : 0);
++}
++
++static int
++bb_rbyte(uint8_t *out, bool ack)
++{
++	uint8_t v = 0;
++	bb_set(0, false);
++	for (unsigned i = 0; i < 8; ++i) {
++		delay(st.bb_half_us);
++		if (!bb_scl_release()) {
++			bb_set(1, true);
++			return EIO;
++		}
++		delay(st.bb_half_us);
++		v = (uint8_t)((v << 1) | (bb_level(0) ? 1u : 0u));
++		bb_set(1, true);
++	}
++	bb_set(0, ack); /* ACK = pull SDA low for the ninth clock */
++	delay(st.bb_half_us);
++	bool ok = bb_scl_release();
++	delay(st.bb_half_us);
++	bb_set(1, true);
++	bb_set(0, false);
++	*out = v;
++	return ok ? 0 : EIO;
++}
++
++/* Free a bus left with SDA low by an interrupted transfer: nine clocks, then STOP. */
++static void
++bb_recover(void)
++{
++	bb_set(0, false);
++	bb_set(1, false);
++	for (unsigned i = 0; i < 9 && !bb_level(0); ++i) {
++		bb_set(1, true);
++		delay(st.bb_half_us);
++		(void)bb_scl_release();
++		delay(st.bb_half_us);
++	}
++	bb_set(1, true);
++	bb_stop();
++}
++
++static int
++bb_msg(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr, bool stretch)
++{
++	int err;
++	bb_start();
++	err = bb_wbyte((uint8_t)((addr << 1) | (nr ? 1u : 0u)));
++	for (unsigned i = 0; i < nt && !err; ++i) {
++		err = bb_wbyte(tx[i]);
++	}
++	for (unsigned i = 0; i < nr && !err; ++i) {
++		err = bb_rbyte(&rx[i], i + 1 < nr);
++	}
++	if (!err && nt && stretch) {
++		return 0; /* bus kept for the repeated START of the next message */
++	}
++	bb_stop();
++	return err;
++}
++
++static void
++bb_init(void)
++{
++	unsigned pull = 0, half_us = 5;
++	uint32_t arg = 0;
++	if (PE_parse_boot_argn("sweettouchbbpull", &arg, sizeof(arg)) && arg) {
++		pull = 3; /* internal pull-up */
++	}
++	arg = 0;
++	if (PE_parse_boot_argn("sweettouchbbus", &arg, sizeof(arg)) && arg >= 1 && arg <= 50) {
++		half_us = arg;
++	}
++	st.bb_half_us = half_us;
++	/* Plain GPIOs (mux 0), inputs, 8 mA; the output latch stays low and OE does the driving. */
++	touch_gpio(TP_SDA, 0, pull, 3, false, false);
++	touch_gpio(TP_SCL, 0, pull, 3, false, false);
++	touch_wr(st.gpio, TOUCH_GPIO_IO(TP_SDA), touch_rd(st.gpio, TOUCH_GPIO_IO(TP_SDA)) & ~2u);
++	touch_wr(st.gpio, TOUCH_GPIO_IO(TP_SCL), touch_rd(st.gpio, TOUCH_GPIO_IO(TP_SCL)) & ~2u);
++	st.bb_cfg[0] = touch_rd(st.gpio, TOUCH_GPIO_CFG(TP_SDA)) & ~0x200u;
++	st.bb_cfg[1] = touch_rd(st.gpio, TOUCH_GPIO_CFG(TP_SCL)) & ~0x200u;
++	printf("SWEET TOUCH: bit-bang I2C, SDA gpio%u SCL gpio%u cfg=%#x/%#x half=%u us pull=%s; idle sda=%u scl=%u\n",
++	    TP_SDA, TP_SCL, st.bb_cfg[0], st.bb_cfg[1], half_us, pull ? "internal" : "external",
++	    bb_level(0) ? 1u : 0u, bb_level(1) ? 1u : 0u);
++	bb_recover();
++}
++
+ /* One Linux-style FIFO message. TX is at most 3 bytes; RX at most 90. */
+ static int
+ touch_msg_run(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx,
+@@ -258,6 +432,9 @@ touch_msg_run(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx,
+ 	if (st.dead || nt > 3 || nr > 90 || (nt && nr) || (!nt && !nr)) {
+ 		return EIO;
+ 	}
++	if (st.bitbang) {
++		return bb_msg(addr, tx, nt, rx, nr, stretch);
++	}
+ 	if (!touch_wait_clear(st.se, SE_STATUS, 1u)) {
+ 		st.dead = true; /* no other SE owner is supported */
+ 		return EBUSY;
+@@ -472,10 +649,19 @@ touch_se_init(void)
+ {
+ 	uint32_t fw = touch_rd(st.se, SE_FW);
+ 	uint32_t tx = touch_rd(st.se, SE_HW_TX), rx = touch_rd(st.se, SE_HW_RX);
+-	printf("SWEET TOUCH: se fw=%#x proto=%u status=%#x tx=%#x rx=%#x ios=%#x\n",
++	uint32_t fifo_off = touch_rd(st.se, 0x64) & 1u;
++	uint32_t forced = 0;
++	(void)PE_parse_boot_argn("sweettouchbb", &forced, sizeof(forced));
++	printf("SWEET TOUCH: se fw=%#x proto=%u status=%#x tx=%#x rx=%#x ios=%#x fifo-disable(0x64)=%#x\n",
+ 	    fw, (fw >> 8) & 0xffu, touch_rd(st.se, SE_STATUS), tx, rx,
+-	    touch_rd(st.se, 0x908));
+-	if (((fw >> 8) & 0xffu) != 3u || (touch_rd(st.se, 0x64) & 1u) ||
++	    touch_rd(st.se, 0x908), touch_rd(st.se, 0x64));
++	if (fifo_off || forced) {
++		printf("SWEET TOUCH: %s: using GPIO bit-bang I2C instead of the SE FIFO path\n",
++		    fifo_off ? "SE FIFO interface is disabled" : "sweettouchbb=1");
++		st.bitbang = true;
++		return true;
++	}
++	if (((fw >> 8) & 0xffu) != 3u || fifo_off ||
+ 	    ((tx >> 24) & 0x3fu) != 32u || ((rx >> 24) & 0x3fu) != 32u ||
+ 	    ((tx >> 16) & 0x3fu) < 2u || ((rx >> 16) & 0x3fu) < 2u) {
+ 		printf("SWEET TOUCH: need ABL-loaded I2C firmware and 32-bit FIFOs; probes skipped\n");
+@@ -576,8 +762,12 @@ touch_thread(void *arg, wait_result_t result)
+ 	}
+ 	touch_gpio(TP_1V8, 0, 3, 3, false, false);    /* DT tp_1v8 active: pull-up */
+ 	touch_wait(10);
+-	touch_gpio(TP_SDA, 1, 0, 0, false, false);    /* qup17, 2 mA, no bias */
+-	touch_gpio(TP_SCL, 1, 0, 0, false, false);
++	if (st.bitbang) {
++		bb_init();                                /* plain GPIOs, driven by bb_*() */
++	} else {
++		touch_gpio(TP_SDA, 1, 0, 0, false, false);    /* qup17, 2 mA, no bias */
++		touch_gpio(TP_SCL, 1, 0, 0, false, false);
++	}
+ 	touch_gpio(TP_RST, 0, 0, 3, true, true);      /* out of reset */
+ 	touch_wait(300);                              /* Linux waits 140 ms */
+ 	st.probing = true;
