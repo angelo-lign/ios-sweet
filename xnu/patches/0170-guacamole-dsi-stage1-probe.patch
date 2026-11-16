@@ -1,0 +1,78 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -2650,12 +2650,74 @@
+ 		const uint32_t offset = 0, vote = (1u << 30) | (1u << 29) | (0x3fffu << 14) | 0x3fffu;
+ 		int error = sweet_rpmh_write(bcm[i], 1, &offset, &vote);
+ 		printf("SWEET GPU: %s voted to the top: %d\n", bcm[i], error);
++	}
++}
++
++/*
++ * 0170: read-only probe of the display side, stage 1 of a brightness path. The panel is a Samsung
++ * s6e3fc2x01 AMOLED in DSI command mode; its brightness is the DCS command 0x51 (2 bytes), which only
++ * the DSI controller can send (dsi-ctrl-hw-v2.3, DSI0 0xae94000 and DSI1 0xae96000, 0x400 each; the
++ * controller's clocks and the DPU were left running by the boot loader). Boot-arg sweetdsi=1 dumps
++ * every non-zero DSI register and the display clock controller's CBCR/RCG words (sweetdsidelay
++ * seconds after boot, default 90): nothing is written.
++ */
++#define DSI0_PA   0x0ae94000ull
++#define DSI1_PA   0x0ae96000ull
++#define DSI_SIZE  0x400ull
++#define DISPCC_PA 0x0af00000ull
++#define DISPCC_SZ 0x10000ull
++
++static void
++dsi_dump(const char *name, vm_offset_t base, uint32_t from, uint32_t to)
++{
++	for (uint32_t o = from; o < to; o += 16) {
++		uint32_t a = rd(base, o), b = rd(base, o + 4), c = rd(base, o + 8), d = rd(base, o + 12);
++		if (a || b || c || d) {
++			printf("SWEET DSI: %s %#06x: %08x %08x %08x %08x\n", name, o, a, b, c, d);
++		}
++	}
++}
++
++static void
++dsi_thread(void *arg, wait_result_t result)
++{
++	unsigned delay_s = 90;
++	(void)arg;
++	(void)result;
++	(void)PE_parse_boot_argn("sweetdsidelay", &delay_s, sizeof(delay_s));
++	printf("SWEET DSI: read-only probe in %u s\n", delay_s);
++	gpu_wait_ms(delay_s * 1000u);
++
++	vm_offset_t d0 = ml_io_map(DSI0_PA, DSI_SIZE);
++	vm_offset_t d1 = ml_io_map(DSI1_PA, DSI_SIZE);
++	vm_offset_t cc = ml_io_map(DISPCC_PA, DISPCC_SZ);
++	if (!d0 || !d1 || !cc) {
++		printf("SWEET DSI: MMIO mapping failed (%lx %lx %lx)\n", (unsigned long)d0, (unsigned long)d1, (unsigned long)cc);
++		goto out;
+ 	}
++	printf("SWEET DSI: DSI0 HW_VERSION %#010x CTRL %#010x STATUS %#010x\n", rd(d0, 0), rd(d0, 4), rd(d0, 8));
++	dsi_dump("dsi0", d0, 0, DSI_SIZE);
++	dsi_dump("dsi1", d1, 0, DSI_SIZE);
++	/* display clock controller: the CBCRs (bit 31 = clock off) and RCGs live at 0x2000..0x2200 on sm8150 */
++	dsi_dump("dispcc", cc, 0x2000, 0x2200);
++	dsi_dump("dispcc", cc, 0x8000, 0x8100);
++	printf("SWEET DSI: probe done (nothing written)\n");
++out:
++	thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
+ void
+ sweet_gpu_probe(void)
+ {
++	unsigned dsi = 0;
++	(void)PE_parse_boot_argn("sweetdsi", &dsi, sizeof(dsi));
++	if (dsi) {
++		thread_t dthread;
++		if (kernel_thread_start(dsi_thread, NULL, &dthread) == KERN_SUCCESS) {
++			thread_deallocate(dthread);
++		}
++	}
+ 	unsigned stage = 0;
+ 	(void)PE_parse_boot_argn("sweetgpu", &stage, sizeof(stage));
+ 	gpu_stage = stage;
