@@ -3,7 +3,18 @@
  * stdout (the job runs it with its output in the kernel log through sweetnull=cpuwatch). To find out what a stall is:
  * a busy process (CPU-bound) or nothing busy (waiting on something). MIT, as userland/.
  */
-#include <libproc.h>
+#include <stdint.h>
+/* the iOS SDK hides libproc.h; these are in libSystem */
+extern int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int buffersize);
+extern int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
+extern int proc_name(int pid, void *buffer, uint32_t buffersize);
+#define PROC_ALL_PIDS    1
+#define PROC_PIDTASKINFO 4
+struct proc_taskinfo {
+	uint64_t pti_virtual_size, pti_resident_size, pti_total_user, pti_total_system, pti_threads_user, pti_threads_system;
+	int32_t pti_policy, pti_faults, pti_pageins, pti_cow_faults, pti_messages_sent, pti_messages_received;
+	int32_t pti_syscalls_mach, pti_syscalls_unix, pti_csw, pti_threadnum, pti_numrunning, pti_priority;
+};
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <stdio.h>
