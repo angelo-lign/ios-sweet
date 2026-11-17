@@ -1,0 +1,23 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -193,10 +193,16 @@
+ 	static void note(const char *what, const char *key)
+ 	{
+ 		static uint32_t n;
+-		if (n < 60) {
++		char name[32];
++		proc_selfname(name, sizeof(name));
++		static const char *const procs[] = { "SpringBoard", "backboardd", "corebrightnessd", "UserEventAgent",
++			"powerd", "thermalmonitord", "mediaserverd", "aggregated", "PowerUIAgent" };
++		bool interesting = false;
++		for (unsigned i = 0; i < sizeof(procs) / sizeof(procs[0]); i++) {
++			interesting = interesting || strcmp(name, procs[i]) == 0;
++		}
++		if ((interesting || strncmp(what, "newUser", 7) == 0) && n < 400) {
+ 			n++;
+-			char name[32];
+-			proc_selfname(name, sizeof(name));
+ 			IOLog("SWEET BL: %s %s from %s\n", what, key ? key : "?", name);
+ 		}
+ 	}
