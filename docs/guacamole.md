@@ -346,6 +346,47 @@ frontend + the metal2vulkan bridge, MIT) over Turnip (`userland/turnip`, Mesa
   in 83 of 94 resumed passes (bounds 1125x2436; 11 a strip y 1244-1388), and
   the runtime's Clear of the DontCare second attachment made every pass
   ineligible. Bounds would have to come from the draws' vertices.
+- Why Turnip keeps those passes in GMEM: its bandwidth autotune prices a
+  pass per pixel of the render area (tu_pass.cc: GMEM = loads + stores,
+  sysmem = clears + resolves). QuartzCore's second color is memoryless and
+  the runtime clears it (Metal reads a memoryless color as zero): a
+  full-screen clear in sysmem. Bridge patch 0103 (M2V_UNTOUCHED_MEMORYLESS=1,
+  set in /var/local/mtl2-env on the phone) keeps that DontCare where no draw
+  of the pass writes or reads the color: 180 of 200 passes. Frames the same
+  (34 swaps/s, 28-41 ms commit to complete). With TU_DEBUG=sysmem on top: the
+  GPU busy at 82-88% of vsyncs (was 92-100%), still ~33 swaps/s, backboardd's
+  render thread ~90% busy: the CPU side of the bridge is the next limit.
+- Power (2026-11-16): on the charger iOS gets ~0.4-0.57 A into the battery
+  idle (SweetBattery InstantAmperage), and with video and the GPU busy it
+  drains ~0.72 A while "IsCharging" stays Yes (3.52 -> 3.39 V in minutes);
+  at ~2% it rebooted itself while booting. Nothing set PM8150B's input
+  current limit (Linux qcom_smb5).
+- 0167 (boot-arg sweetcharge=1, with sweetbattery=2): SweetBattery sets the
+  SMB5 USB input current limit once APSD is done, as smb5-lib.c's
+  smblib_set_icl_current() in high-current mode: 0x1370 = mA/50, 0x1366
+  bit 0 USBIN_MODE_CHG, 0x1342 bit 0 (ICL override) clear, 0x1365 bit 4
+  ICL_OVERRIDE_AFTER_APSD; SDP (a computer) left at its 500 mA, Type-C Rp
+  3.0 A 2000 mA, DCP/CDP/OCP or Rp 1.5 A 1500 mA, else 1000 mA; FCC (0x1061)
+  raised to 2000 mA where lower; float voltage only logged ("SWEET CHARGE:"
+  lines, on a change). sweet_spmi_write writes those five registers alone,
+  through an EE0-owned write channel. 2026-11-16, a Type-C wall charger:
+  +1290 mA into the battery right after boot, +1536 mA at 3.95 V (was
+  +0.38-0.57 A).
+- Charger screen (shim/charger.c): ABL boots the boot image with
+  androidboot.mode=charger in /chosen/bootargs when a charger powers the
+  phone on. The shim then sets the same current limits as 0167, draws the
+  battery and percentage (FG monotonic SOC) on black, blanks after 15 s
+  (AMOLED black is off; the core sleeps on wfe with CNTKCTL_EL1's event
+  stream), shows it again on a power key press, starts iOS when the key is
+  held 2 s (not below 3% / 3.6 V), and powers off when the charger is gone
+  3 s: PM8150 PS_HOLD_RST_CTL2 (0x85b) bit 7 off, 1 ms, PS_HOLD_RST_CTL
+  (0x85a) type 4 = SHUTDOWN (ABL leaves 1, warm reset), bit 7 on, then PSCI
+  SYSTEM_OFF (qpnp_pon_reset_config). shim/spmi.c's spmi_write takes only
+  those PON registers, the reboot spare and 0167's five. Tested 2026-11-16
+  under fastboot boot with ABLCMD="console=null androidboot.mode=charger"
+  (guac-mkboot.sh puts it in the header's cmdline); a real charger power-on
+  needs the shim in the flashed boot partition. Build:
+  BOARD=guacamole CROSS=aarch64-elf- shim/build.sh (Homebrew toolchain).
 - /var/local/mtl2-env is read by every Metal client (backboardd runs as
   mobile: a trigger file it must delete goes in /var/local/m2v-cache).
 - When osanalyticshelper says "limit of 25 logs has been reached" no crash
