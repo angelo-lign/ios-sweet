@@ -1,6 +1,6 @@
 /*
  * tsample: a sampling profiler for one process (iOS has no `sample`).
- *   tsample PID [SAMPLES] [INTERVAL_US]
+ *   tsample PID|NAME [SAMPLES] [INTERVAL_US] [DELAY_S]   (a process name is looked up, after DELAY_S seconds)
  * Picks the busiest thread, suspends it SAMPLES times (default 500, every 4000 us), walks its frame-pointer
  * chain and prints, per sample, "S <depth> <pc> <pc> ..." plus the loaded images ("I <base> <path>") for
  * symbolication on the host. Signed with task_for_pid-allow (tsample.plist).
@@ -11,6 +11,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string.h>
+/* the iOS SDK hides libproc.h; these are in libSystem */
+extern int proc_listpids(uint32_t type, uint32_t typeinfo, void *buffer, int buffersize);
+extern int proc_name(int pid, void *buffer, uint32_t buffersize);
 
 static uint64_t
 rd64(task_t t, uint64_t a)
@@ -30,6 +34,22 @@ main(int argc, char **argv)
 		return 2;
 	}
 	int pid = atoi(argv[1]), samples = argc > 2 ? atoi(argv[2]) : 500, us = argc > 3 ? atoi(argv[3]) : 4000;
+	if (argc > 4)
+		sleep((unsigned)atoi(argv[4]));
+	if (pid == 0) {
+		static int pids[2048];
+		int n = proc_listpids(1, 0, pids, sizeof(pids)) / (int)sizeof(int);
+		for (int i = 0; i < n && pid == 0; i++) {
+			char name[64] = "";
+			if (pids[i] > 0 && proc_name(pids[i], name, sizeof(name)) > 0 && strcmp(name, argv[1]) == 0)
+				pid = pids[i];
+		}
+		if (pid == 0) {
+			fprintf(stderr, "tsample: no process %s\n", argv[1]);
+			return 1;
+		}
+	}
+	setvbuf(stdout, NULL, _IOLBF, 0);
 	task_t task;
 	kern_return_t kr = task_for_pid(mach_task_self(), pid, &task);
 	if (kr != KERN_SUCCESS) {
