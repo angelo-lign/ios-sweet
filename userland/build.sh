@@ -68,6 +68,9 @@ build cpuwatch jb/cpuwatch.c
 # sampling profiler (tsample PID|NAME SAMPLES US DELAY_S), signed with task_for_pid-allow
 build tsample jb/tsample.c
 codesign -f -s - --entitlements jb/tsample.plist out/tsample
+# a test tone through the receiver (PlayAndRecord output goes to the earpiece): earplay [SECS] [speaker]
+build earplay jb/earplay.m -fobjc-arc -framework Foundation -framework AVFoundation
+codesign -f -s - --entitlements jb/sweet-displayd-ents.plist out/earplay
 # G3: needs userland/mesa/mk-mesa.sh first (libOSMesa.8.dylib + headers)
 MESA=mesa/build
 if [ -f $MESA/out/libOSMesa.8.dylib ]; then
