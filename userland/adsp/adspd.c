@@ -1956,6 +1956,7 @@ static int serve(void)
 		edge_poll(20);
 		smp2p_service();
 		listener_service();
+		route_check();		/* the earpiece: SweetCodec's route flag, between commands as in idle() */
 		ssize_t n = read(fd, buf + have, sizeof(buf) - 1 - have);
 		if (n > 0)
 			have += (size_t)n;
