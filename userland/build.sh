@@ -59,6 +59,10 @@ ln -s "$MACSDK/System/Library/Frameworks/CoreAudio.framework/Headers" out/inc/Co
 $CC -bundle -Iout/inc -Wno-unused-parameter -o out/SweetCodec.driver/SweetCodec audio/sweetcodec.c -framework CoreFoundation
 cp audio/Info.plist out/SweetCodec.driver/Info.plist
 codesign -f -s - out/SweetCodec.driver && echo out/SweetCodec.driver
+# Bluetooth (docs/guacamole.md, Bluetooth): btd boots the WCN3990 BT core over its UART and serves HCI to bluetoothd through the kernel control
+# com.sweet.bt (xnu 0162, boot-arg sweetbt=1); bluetoold stands in for BlueTool's XPC service. Firmware in /var/local/fw/bt (crbtfw21.tlv, crnv21.bin).
+build btd bt/btd.c wland/pmem.c -Iwland -Wno-unused-parameter
+build bluetoold bt/bluetoold.c
 # G3: needs userland/mesa/mk-mesa.sh first (libOSMesa.8.dylib + headers)
 MESA=mesa/build
 if [ -f $MESA/out/libOSMesa.8.dylib ]; then
