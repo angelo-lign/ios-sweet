@@ -11,7 +11,8 @@
  *   tfa rd ADDR REG [N]     N registers from REG
  *   tfa wr ADDR REG VAL     one register
  *   tfa status              power state and status of both amps
- *   tfa init [PROFILE]      reset, settings for the revision, container items (profile 1 = speaker), out of powerdown
+ *   tfa init [PROFILE [MASK]]  reset, settings for the revision, container items (profile 0 = receiver, 1 = speaker), out of
+ *                           powerdown; MASK bit 0 = 0x34, bit 1 = 0x35 (default 3): the other is powered down
  *   tfa off                 both amps to powerdown
  */
 #include <errno.h>
@@ -471,9 +472,19 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "init")) {
 		/* profile 1 = "speaker" (0 receiver, 2 calibrate.cal) */
 		unsigned prof = argc > 2 ? (unsigned)atoi(argv[2]) : 1;
+		/* MASK: bit 0 = right (0x34), bit 1 = left (0x35); an amp outside it is left in powerdown (default: both) */
+		unsigned mask = argc > 3 ? (unsigned)strtoul(argv[3], NULL, 0) : 3;
 		if (load_cnt())
 			return 1;
-		int e1 = amp_init(AMP_RIGHT, 0, prof), e2 = amp_init(AMP_LEFT, 1, prof);
+		int e1 = 0, e2 = 0;
+		if (mask & 1)
+			e1 = amp_init(AMP_RIGHT, 0, prof);
+		else
+			bf_wr(AMP_RIGHT, BF_PWDN, 1);
+		if (mask & 2)
+			e2 = amp_init(AMP_LEFT, 1, prof);
+		else
+			bf_wr(AMP_LEFT, BF_PWDN, 1);
 		if (e1 || e2)
 			printf("init errors: right %d left %d\n", e1, e2);
 		status(AMP_RIGHT);
