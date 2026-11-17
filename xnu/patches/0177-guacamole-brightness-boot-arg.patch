@@ -1,0 +1,59 @@
+diff --git a/bsd/dev/sweet_gpu.c b/bsd/dev/sweet_gpu.c
+--- a/bsd/dev/sweet_gpu.c
++++ b/bsd/dev/sweet_gpu.c
+@@ -2812,12 +2812,42 @@
+ out:
+ 	bl_busy = 0;
+ 	return ret;
++}
++
++/*
++ * 0177: boot-arg sweetbllevel=N (0x10..0x3ff; 0x12c is the boot loader's) sets the panel brightness through
++ * sweet_dsi_set_level() sweetbldelay seconds (default 75) after boot, three times 5 s apart (the first may find
++ * the DMA busy). Dimmer = cooler and less battery on this AMOLED.
++ */
++static void
++bl_level_thread(void *arg, wait_result_t result)
++{
++	unsigned level = 0, delay_s = 75;
++	(void)arg;
++	(void)result;
++	(void)PE_parse_boot_argn("sweetbllevel", &level, sizeof(level));
++	(void)PE_parse_boot_argn("sweetbldelay", &delay_s, sizeof(delay_s));
++	gpu_wait_ms(delay_s * 1000u);
++	for (unsigned i = 0; i < 3; i++) {
++		int err = sweet_dsi_set_level(level);
++		printf("SWEET DSI: brightness level %#x: %d\n", level, err);
++		gpu_wait_ms(5000);
++	}
++	thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
+ void
+ sweet_gpu_probe(void)
+ {
+-	unsigned dsi = 0;
++	unsigned dsi = 0, bllevel = 0;
++	(void)PE_parse_boot_argn("sweetbllevel", &bllevel, sizeof(bllevel));
++	if (bllevel) {
++		thread_t bthread;
++		if (kernel_thread_start(bl_level_thread, NULL, &bthread) == KERN_SUCCESS) {
++			thread_deallocate(bthread);
++		}
++	}
+ 	(void)PE_parse_boot_argn("sweetdsi", &dsi, sizeof(dsi));
+ 	if (dsi) {
+ 		thread_t dthread;
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -465,7 +465,7 @@
+ 	}
+ 	OSSafeReleaseNULL(accel);
+ 
+-	uint32_t bl = 1;
++	uint32_t bl = 0;        /* 0177: off by default, the UI stalls with it (sweetbl=1 turns it on) */
+ 	(void)PE_parse_boot_argn("sweetbl", &bl, sizeof(bl));
+ 	AppleARMBacklight *blsvc = bl ? OSTypeAlloc(AppleARMBacklight) : NULL;
+ 	if (blsvc != NULL && blsvc->init()) {
