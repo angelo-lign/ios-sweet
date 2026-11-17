@@ -1014,3 +1014,10 @@ AppleARMBacklight 0178 + `sweet-displayd`), speaker audio: `/odm/firmware/tfa98x
 from the modem partition, installed with SWEETBOX (a box can only write into existing directories: create them first with `sweet-fs mkdir`
 from an autorun.sh, move VirtualAudio.plugin out of HAL.disabled with `sweet-fs mv`, then a second box with the ROOT/ files). The amps came
 up at REV 0xc74 (TFA9874), MANSTATE 9. Recents is GPU-bound (about 11 swaps/s at 100% GPU busy); 2x rendering (xnu 0169) did not help.
+
+### Persistent boot on the 7T Pro (2026-11-17)
+
+No selector: the generated boot image goes straight into slot B. `fastboot flash boot_b IMAGE`, `fastboot flash dtbo_b dtbo_a.img`
+(the bootloader applies the active slot's overlay: slot B's was the stock ROM's, not the one the tethered boots used), `fastboot set_active b`,
+`fastboot reboot`. Worked first time; slot A (Android's boot image) stays as the fallback (`fastboot set_active a`). Back up boot/dtbo/vbmeta
+of both slots first.
