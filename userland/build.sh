@@ -63,6 +63,8 @@ codesign -f -s - out/SweetCodec.driver && echo out/SweetCodec.driver
 # com.sweet.bt (xnu 0162, boot-arg sweetbt=1); bluetoold stands in for BlueTool's XPC service. Firmware in /var/local/fw/bt (crbtfw21.tlv, crnv21.bin).
 build btd bt/btd.c wland/pmem.c -Iwland -Wno-unused-parameter
 build bluetoold bt/bluetoold.c
+# per-second CPU users and VM page counts (job com.sweet.cpuwatch, output to the kernel log with sweetnull=cpuwatch)
+build cpuwatch jb/cpuwatch.c
 # G3: needs userland/mesa/mk-mesa.sh first (libOSMesa.8.dylib + headers)
 MESA=mesa/build
 if [ -f $MESA/out/libOSMesa.8.dylib ]; then
