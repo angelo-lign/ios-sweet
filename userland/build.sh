@@ -40,6 +40,25 @@ build nettest flame/nettest.m -fobjc-arc -framework Foundation
 # a network service for en0 (preferences.plist from before 0139 has none)
 build wifisvc wifisvc/wifisvc.c -framework CoreFoundation -framework SystemConfiguration
 codesign -f -s - --entitlements wifisvc/entitlements.plist out/wifisvc
+# brightness slider / Night Shift (upstream coreycusick/ios-guacamole 0197): polls BKSDisplayBrightnessGetCurrent and writes DCS 0x51 over DSI0
+# (install /var/local/bin/sweet-displayd; job com.sweet.displayd); needs the kernel's AppleARMBacklight (xnu 0178)
+build sweet-displayd jb/sweet-displayd.m -fobjc-arc -framework Foundation
+codesign -f -s - --entitlements jb/sweet-displayd-ents.plist out/sweet-displayd
+# speaker audio (docs/guacamole.md, Audio): ADSP boot + APR (adspd) and the two TFA9874 speaker amps (tfa), over /dev/pmem
+build adspd adsp/adspd.c adsp/edge.c wland/smem.c wland/qmi.c wland/pmem.c -Iwland -Wno-unused-parameter
+build tfa adsp/tfa.c wland/pmem.c -Iwland -Wno-unused-parameter
+# mediaserverd through libsweet-vabt (VirtualAudio routes without a codec), see jb/mswrap.c and jb/vabt.c
+build mswrap jb/mswrap.c
+build libsweet-vabt.dylib jb/vabt.c -dynamiclib -install_name /var/local/lib/libsweet-vabt.dylib -Wl,-not_for_dyld_shared_cache
+# SweetCodec: HAL AudioServerPlugIn standing in for the iPhone's codec (docs/guacamole.md, Audio). The iOS SDK hides CoreAudio's
+# plug-in headers: take them from the macOS SDK. Install as /Library/Audio/Plug-Ins/HAL/SweetCodec.driver.
+MACSDK=$(xcrun --sdk macosx --show-sdk-path)
+mkdir -p out/inc out/SweetCodec.driver
+rm -f out/inc/CoreAudio
+ln -s "$MACSDK/System/Library/Frameworks/CoreAudio.framework/Headers" out/inc/CoreAudio
+$CC -bundle -Iout/inc -Wno-unused-parameter -o out/SweetCodec.driver/SweetCodec audio/sweetcodec.c -framework CoreFoundation
+cp audio/Info.plist out/SweetCodec.driver/Info.plist
+codesign -f -s - out/SweetCodec.driver && echo out/SweetCodec.driver
 # G3: needs userland/mesa/mk-mesa.sh first (libOSMesa.8.dylib + headers)
 MESA=mesa/build
 if [ -f $MESA/out/libOSMesa.8.dylib ]; then
