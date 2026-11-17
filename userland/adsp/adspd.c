@@ -1667,12 +1667,39 @@ static void listener_service(void)
 
 /* ---- main ---- */
 
+static void run_exec(char *args);
+
+/*
+ * The earpiece: iOS picks the receiver as the codec's output data source and SweetCodec says so in the ring's `route`
+ * (1). On this phone the receiver is the top amp (0x34) on its own with the container's "receiver" profile; the speaker
+ * is both amps with "speaker" (profile numbers in tfa.c). Switched here, between two periods of the stream.
+ */
+static unsigned cur_route;
+static int route_busy;
+
+static void route_check(void)
+{
+	if (route_busy || !pcm_ring)
+		return;
+	unsigned want = pcm_ring->route ? 1 : 0;
+	if (want == cur_route)
+		return;
+	route_busy = 1;
+	char cmd[64];
+	snprintf(cmd, sizeof(cmd), want ? "/var/local/bin/tfa init 0 1" : "/var/local/bin/tfa init 1 3");
+	printf("route: %s -> %s\n", cur_route ? "receiver" : "speaker", want ? "receiver" : "speaker");
+	run_exec(cmd);
+	cur_route = want;
+	route_busy = 0;
+}
+
 static void idle(unsigned ms)
 {
 	uint64_t end = edge_ms() + ms;
 	while (edge_ms() < end) {
 		edge_poll(50);
 		smp2p_service();
+		route_check();
 	}
 }
 

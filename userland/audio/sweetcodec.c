@@ -671,6 +671,8 @@ static OSStatus SetPropertyData(AudioServerPlugInDriverRef s, AudioObjectID obj,
 		UInt32 v = in >= 4 ? *(const UInt32 *)data : 0;
 		Boolean is_in = obj == kObj_InSource || a->mScope == kAudioObjectPropertyScopeInput;
 		if (is_in) in_source = v; else out_source = v;
+		if (!is_in && ring)
+			ring->route = out_source == 'prec';
 		changed[nchanged++] = (AudioObjectPropertyAddress){ kAudioSelectorControlPropertyCurrentItem, kAudioObjectPropertyScopeGlobal, 0 };
 		LOG("%s source '%c%c%c%c'", is_in ? "input" : "output", v >> 24, v >> 16, v >> 8, v);
 		break;
@@ -714,12 +716,14 @@ static void ring_map(void)
 		return;
 	}
 	ring = m;
+	ring->route = out_source == 'prec';
 	LOG("speaker output through %s", SWEETPCM_PATH);
 }
 
 static void ring_write(const Float32 *src, UInt32 frames)
 {
-	Float32 gain = (out_mute || elem_mute[0]) ? 0.0f : out_volume * elem_volume[0];	/* master x speaker */
+	int e = out_source == 'prec' ? 1 : 0;		/* the receiver's controls when iOS picked it */
+	Float32 gain = (out_mute || elem_mute[e]) ? 0.0f : out_volume * elem_volume[e];	/* master x speaker / receiver */
 	uint64_t w = ring->wpos;
 	for (UInt32 i = 0; i < frames; i++) {
 		uint32_t k = (uint32_t)((w + i) % SWEETPCM_FRAMES);

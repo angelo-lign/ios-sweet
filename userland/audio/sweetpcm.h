@@ -19,7 +19,8 @@ struct sweetpcm {
 	uint32_t magic, rate, frames, channels;
 	volatile uint64_t wpos;		/* SweetCodec */
 	volatile uint64_t rpos;		/* adspd */
-	uint32_t reserved[8];
+	volatile uint32_t route;	/* SweetCodec: the output iOS picked, 0 speaker, 1 receiver (earpiece); adspd switches the amps */
+	uint32_t reserved[7];
 	int16_t data[SWEETPCM_FRAMES * 2];
 };
 
