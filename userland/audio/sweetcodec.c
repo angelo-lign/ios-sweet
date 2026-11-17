@@ -120,6 +120,7 @@ static UInt64 periods;
 static Float32 out_volume = 1.0f;
 static UInt32 out_mute;
 static UInt32 out_source = 'pspk', in_source = 'pmbi';
+static struct sweetpcm *ring;	/* the speaker ring, see ring_map() */
 static atomic_uint refs = 1;
 
 #define ZERO_TS_PERIOD 4096
