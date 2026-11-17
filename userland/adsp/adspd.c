@@ -1816,6 +1816,12 @@ static void command(char *line)
 		printf("pcm: open %d copp %d, %u written, %u done, %u in flight, %u underruns, %u skips, ring %s wpos %llu rpos %llu\n",
 		       pcm_open, pcm_copp, pcm_written, pcm_done, pcm_inflight, pcm_underruns, pcm_skips, pcm_ring ? "on" : "off",
 		       pcm_ring ? (unsigned long long)pcm_ring->wpos : 0ull, pcm_ring ? (unsigned long long)pcm_ring->rpos : 0ull);
+	} else if (!strncmp(line, "route ", 6)) {
+		/* the output as SweetCodec reports it: route 0 speaker, route 1 receiver (the amps follow in idle()) */
+		if (pcm_ring)
+			pcm_ring->route = (uint32_t)atoi(line + 6) ? 1 : 0;
+		else
+			printf("route: no ring\n");
 	} else if (!strcmp(line, "afe probe")) {
 		afe_probe();
 	} else if (!strcmp(line, "afe off") && afe_running) {
