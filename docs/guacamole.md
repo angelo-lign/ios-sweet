@@ -1005,3 +1005,12 @@ only the helper: a box with `ROOT/usr/libexec/sweet-autorun` and
 References used for structure (no code copied): Linux msm a6xx driver,
 mxtpasontop/ios-sweet `gpu` branch (A618 on SM7150), Bergamota
 `docs/GPU_A630_BRINGUP.md`, MakrSas/ios-topaz (IOAcceleratorES, GPU userland).
+
+## OnePlus 7T Pro (hotdog) notes (2026-11-17)
+
+Same SM8150 and almost the same board as the 7 Pro; what differed: modem region size 0xa000000 (`WLAND_MPSS_SIZE`), the touch's SE17 FIFO is
+disabled (bit-bang I2C, xnu 0167/0168), panel brightness by DCS 0x51 over DSI0 command DMA (xnu 0170-0173 probes, then upstream's
+AppleARMBacklight 0178 + `sweet-displayd`), speaker audio: `/odm/firmware/tfa98xx.cnt` (odm_a, inside `super`) and the ADSP firmware
+from the modem partition, installed with SWEETBOX (a box can only write into existing directories: create them first with `sweet-fs mkdir`
+from an autorun.sh, move VirtualAudio.plugin out of HAL.disabled with `sweet-fs mv`, then a second box with the ROOT/ files). The amps came
+up at REV 0xc74 (TFA9874), MANSTATE 9. Recents is GPU-bound (about 11 swaps/s at 100% GPU busy); 2x rendering (xnu 0169) did not help.

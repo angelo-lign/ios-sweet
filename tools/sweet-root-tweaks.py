@@ -124,6 +124,16 @@ NET_JOBS = {
         'StandardOutPath': '/var/local/adspd.out',
         'StandardErrorPath': '/var/local/adspd.out',
     },
+    # brightness slider / Night Shift (userland/jb/sweet-displayd.m, needs the kernel's AppleARMBacklight, xnu 0178)
+    '/System/Library/LaunchDaemons/com.sweet.displayd.plist': {
+        'Label': 'com.sweet.displayd',
+        'ProgramArguments': ['/var/local/bin/sweet-displayd'],
+        'RunAtLoad': True,
+        'KeepAlive': True,
+        'POSIXSpawnType': 'Interactive',
+        'StandardOutPath': '/var/local/displayd.out',
+        'StandardErrorPath': '/var/local/displayd.out',
+    },
     '/System/Library/LaunchDaemons/com.sweet.sshd.plist': {
         'Label': 'com.sweet.sshd',
         'ProgramArguments': ['/var/jb/usr/sbin/sshd', '-D'],
@@ -183,6 +193,8 @@ def launchd_plist(src, dst):
         for job in jobs.values():
             if job.get('Label') == 'com.apple.bluetoothd':
                 job.setdefault('EnvironmentVariables', {}).update(BLUETOOTHD_ENV)
+            if job.get('Label') == 'com.apple.mediaserverd' and os.environ.get('SWEET_MSWRAP'):
+                job['ProgramArguments'] = ['/var/local/bin/mswrap']     # libsweet-vabt (userland/jb/vabt.c)
             if job.get('Label') == 'com.apple.BlueTool':
                 job['ProgramArguments'] = list(BLUETOOL_STANDIN)
     for job in jobs.values():
