@@ -60,13 +60,27 @@ main(int argc, char **argv)
 	mach_msg_type_number_t nth;
 	if (task_threads(task, &th, &nth) != KERN_SUCCESS)
 		return 1;
-	int best = -1, bestcpu = -1;
-	for (unsigned i = 0; i < nth; i++) {
+	/* the busiest thread: most CPU time used over the next 700 ms (cpu_usage is a slow average and misses a burst) */
+	uint64_t t0[256];
+	for (unsigned i = 0; i < nth && i < 256; i++) {
 		thread_basic_info_data_t bi;
 		mach_msg_type_number_t c = THREAD_BASIC_INFO_COUNT;
-		if (thread_info(th[i], THREAD_BASIC_INFO, (thread_info_t)&bi, &c) == KERN_SUCCESS && bi.cpu_usage > bestcpu) {
-			bestcpu = bi.cpu_usage;
-			best = i;
+		t0[i] = 0;
+		if (thread_info(th[i], THREAD_BASIC_INFO, (thread_info_t)&bi, &c) == KERN_SUCCESS)
+			t0[i] = (uint64_t)(bi.user_time.seconds + bi.system_time.seconds) * 1000000 + bi.user_time.microseconds + bi.system_time.microseconds;
+	}
+	usleep(700000);
+	int best = -1, bestcpu = -1;
+	for (unsigned i = 0; i < nth && i < 256; i++) {
+		thread_basic_info_data_t bi;
+		mach_msg_type_number_t c = THREAD_BASIC_INFO_COUNT;
+		if (thread_info(th[i], THREAD_BASIC_INFO, (thread_info_t)&bi, &c) == KERN_SUCCESS) {
+			uint64_t t1 = (uint64_t)(bi.user_time.seconds + bi.system_time.seconds) * 1000000 + bi.user_time.microseconds + bi.system_time.microseconds;
+			int pct10 = (int)((t1 - t0[i]) / 700);        /* tenths of a percent of the 700 ms */
+			if (pct10 > bestcpu) {
+				bestcpu = pct10;
+				best = i;
+			}
 		}
 	}
 	printf("T %d threads, busiest #%d at %.1f%%\n", nth, best, bestcpu / 10.0);
