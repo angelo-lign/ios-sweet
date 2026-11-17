@@ -1,6 +1,6 @@
 /*
  * tsample: a sampling profiler for one process (iOS has no `sample`).
- *   tsample PID|NAME [SAMPLES] [INTERVAL_US] [DELAY_S]   (a process name is looked up, after DELAY_S seconds)
+ *   tsample PID|NAME [SAMPLES] [INTERVAL_US] [DELAY_S] [TRIG_PCT]   (a process name is looked up, after DELAY_S seconds; TRIG_PCT: wait for a thread that busy)
  * Picks the busiest thread, suspends it SAMPLES times (default 500, every 4000 us), walks its frame-pointer
  * chain and prints, per sample, "S <depth> <pc> <pc> ..." plus the loaded images ("I <base> <path>") for
  * symbolication on the host. Signed with task_for_pid-allow (tsample.plist).
@@ -56,32 +56,42 @@ main(int argc, char **argv)
 		fprintf(stderr, "task_for_pid: %s\n", mach_error_string(kr));
 		return 1;
 	}
+	int trig10 = argc > 5 ? atoi(argv[5]) * 10 : 0;     /* wait until the busiest thread used this % over 700 ms */
 	thread_act_array_t th;
 	mach_msg_type_number_t nth;
-	if (task_threads(task, &th, &nth) != KERN_SUCCESS)
-		return 1;
-	/* the busiest thread: most CPU time used over the next 700 ms (cpu_usage is a slow average and misses a burst) */
-	uint64_t t0[256];
-	for (unsigned i = 0; i < nth && i < 256; i++) {
-		thread_basic_info_data_t bi;
-		mach_msg_type_number_t c = THREAD_BASIC_INFO_COUNT;
-		t0[i] = 0;
-		if (thread_info(th[i], THREAD_BASIC_INFO, (thread_info_t)&bi, &c) == KERN_SUCCESS)
-			t0[i] = (uint64_t)(bi.user_time.seconds + bi.system_time.seconds) * 1000000 + bi.user_time.microseconds + bi.system_time.microseconds;
-	}
-	usleep(700000);
-	int best = -1, bestcpu = -1;
-	for (unsigned i = 0; i < nth && i < 256; i++) {
-		thread_basic_info_data_t bi;
-		mach_msg_type_number_t c = THREAD_BASIC_INFO_COUNT;
-		if (thread_info(th[i], THREAD_BASIC_INFO, (thread_info_t)&bi, &c) == KERN_SUCCESS) {
-			uint64_t t1 = (uint64_t)(bi.user_time.seconds + bi.system_time.seconds) * 1000000 + bi.user_time.microseconds + bi.system_time.microseconds;
-			int pct10 = (int)((t1 - t0[i]) / 700);        /* tenths of a percent of the 700 ms */
-			if (pct10 > bestcpu) {
-				bestcpu = pct10;
-				best = i;
+	int best, bestcpu;
+	for (int tries = 0;; tries++) {
+		if (task_threads(task, &th, &nth) != KERN_SUCCESS)
+			return 1;
+		/* the busiest thread: most CPU time used over the next 700 ms (cpu_usage is a slow average and misses a burst) */
+		uint64_t t0[256];
+		for (unsigned i = 0; i < nth && i < 256; i++) {
+			thread_basic_info_data_t bi;
+			mach_msg_type_number_t c = THREAD_BASIC_INFO_COUNT;
+			t0[i] = 0;
+			if (thread_info(th[i], THREAD_BASIC_INFO, (thread_info_t)&bi, &c) == KERN_SUCCESS)
+				t0[i] = (uint64_t)(bi.user_time.seconds + bi.system_time.seconds) * 1000000 + bi.user_time.microseconds + bi.system_time.microseconds;
+		}
+		usleep(700000);
+		best = -1;
+		bestcpu = -1;
+		for (unsigned i = 0; i < nth && i < 256; i++) {
+			thread_basic_info_data_t bi;
+			mach_msg_type_number_t c = THREAD_BASIC_INFO_COUNT;
+			if (thread_info(th[i], THREAD_BASIC_INFO, (thread_info_t)&bi, &c) == KERN_SUCCESS) {
+				uint64_t t1 = (uint64_t)(bi.user_time.seconds + bi.system_time.seconds) * 1000000 + bi.user_time.microseconds + bi.system_time.microseconds;
+				int pct10 = (int)((t1 - t0[i]) / 700);        /* tenths of a percent of the 700 ms */
+				if (pct10 > bestcpu) {
+					bestcpu = pct10;
+					best = i;
+				}
 			}
 		}
+		if (bestcpu >= trig10 || tries > 800)
+			break;
+		for (unsigned i = 0; i < nth; i++)
+			mach_port_deallocate(mach_task_self(), th[i]);
+		vm_deallocate(mach_task_self(), (vm_address_t)th, nth * sizeof(*th));
 	}
 	printf("T %d threads, busiest #%d at %.1f%%\n", nth, best, bestcpu / 10.0);
 	thread_act_t t = th[best];
