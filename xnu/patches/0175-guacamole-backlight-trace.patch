@@ -1,0 +1,44 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -188,6 +188,40 @@
+ 	{
+ 		sweet_bl_set("AppleARMBacklight(setProperty)", aKey, anObject);
+ 		return IOService::setProperty(aKey, anObject);
++	}
++	/* 0175: what do SpringBoard/backboardd ask of this service? (first 60 calls) */
++	static void note(const char *what, const char *key)
++	{
++		static uint32_t n;
++		if (n < 60) {
++			n++;
++			char name[32];
++			proc_selfname(name, sizeof(name));
++			IOLog("SWEET BL: %s %s from %s\n", what, key ? key : "?", name);
++		}
++	}
++	OSObject *copyProperty(const OSSymbol *aKey) const APPLE_KEXT_OVERRIDE
++	{
++		note("copyProperty", aKey ? aKey->getCStringNoCopy() : NULL);
++		return IOService::copyProperty(aKey);
++	}
++	OSObject *copyProperty(const OSString *aKey) const APPLE_KEXT_OVERRIDE
++	{
++		note("copyProperty", aKey ? aKey->getCStringNoCopy() : NULL);
++		return IOService::copyProperty(aKey);
++	}
++	OSObject *copyProperty(const char *aKey) const APPLE_KEXT_OVERRIDE
++	{
++		note("copyProperty", aKey);
++		return IOService::copyProperty(aKey);
++	}
++	IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties,
++	    IOUserClient **handler) APPLE_KEXT_OVERRIDE
++	{
++		char tb[24];
++		snprintf(tb, sizeof(tb), "type %u", (unsigned)type);
++		note("newUserClient", tb);
++		return IOService::newUserClient(owningTask, securityID, type, properties, handler);
+ 	}
+ };
+ 
